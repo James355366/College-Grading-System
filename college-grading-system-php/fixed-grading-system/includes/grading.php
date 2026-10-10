@@ -4,12 +4,22 @@
  * Philippine CHED-standard transmutation, 75% passing floor.
  */
 
+function valid_percentage($value): bool {
+    return (is_string($value) || is_int($value) || is_float($value))
+        && is_numeric($value) && is_finite((float)$value)
+        && (float)$value >= 0 && (float)$value <= 100
+        && abs((float)$value * 100 - round((float)$value * 100)) < 0.000001;
+}
+
 function weights_total(array $w): float {
     return (float)($w['class_standing'] ?? 0) + (float)($w['major_exams'] ?? 0)
          + (float)($w['performance_task'] ?? 0) + (float)($w['activity_output'] ?? 0);
 }
 
 function is_valid_weights(array $w): bool {
+    foreach (['class_standing', 'major_exams', 'performance_task', 'activity_output'] as $key) {
+        if (!valid_percentage($w[$key] ?? null)) return false;
+    }
     return round(weights_total($w), 2) == 100.0;
 }
 
@@ -43,14 +53,15 @@ function is_passing(float $percent): bool {
     return $percent >= 75;
 }
 
-function avg_scores(array $nums): float {
+function avg_scores(array $nums): ?float {
+    if (in_array(null, $nums, true)) return null;
     $valid = array_map(fn($n) => (float)($n ?? 0), $nums);
     if (count($valid) === 0) return 0.0;
     return array_sum($valid) / count($valid);
 }
 
-function round1(float $n): float {
-    return round($n, 2);
+function round1(?float $n): ?float {
+    return $n === null ? null : round($n, 2);
 }
 
 /**
@@ -61,8 +72,8 @@ function round1(float $n): float {
 function compute_grade(array $scores, array $weights): array {
     $classStanding = avg_scores([$scores['quiz'], $scores['oral'], $scores['attendance']]);
     $majorExams    = avg_scores([$scores['prelim'], $scores['final_exam']]);
-    $performanceTask = (float)($scores['performance_task'] ?? 0);
-    $activityOutput  = (float)($scores['activity_output'] ?? 0);
+    $performanceTask = isset($scores['performance_task']) ? (float)$scores['performance_task'] : null;
+    $activityOutput = isset($scores['activity_output']) ? (float)$scores['activity_output'] : null;
 
     $lectureGrade = ($classStanding * (float)($weights['class_standing'] ?? 0)) / 100
                   + ($majorExams * (float)($weights['major_exams'] ?? 0)) / 100;
@@ -70,11 +81,16 @@ function compute_grade(array $scores, array $weights): array {
     $labGrade = ($performanceTask * (float)($weights['performance_task'] ?? 0)) / 100
               + ($activityOutput * (float)($weights['activity_output'] ?? 0)) / 100;
 
-    $finalPercent = round($lectureGrade + $labGrade, 2);
-    $gpa = percent_to_gpa($finalPercent);
-    $passed = is_passing($finalPercent);
+    if ($classStanding === null || $majorExams === null) $lectureGrade = null;
+    if ($performanceTask === null || $activityOutput === null) $labGrade = null;
+    $complete = $lectureGrade !== null && $labGrade !== null;
+    $finalPercent = $complete ? round($lectureGrade + $labGrade, 2) : null;
+    $gpa = $complete ? percent_to_gpa($finalPercent) : null;
+    $passed = $complete ? is_passing($finalPercent) : null;
 
     return [
+        'complete' => $complete,
+        'status' => $complete ? ($passed ? 'passed' : 'failed') : 'incomplete',
         'classStanding'   => round1($classStanding),
         'majorExams'      => round1($majorExams),
         'lectureGrade'    => round1($lectureGrade),

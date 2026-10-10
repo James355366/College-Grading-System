@@ -1,6 +1,7 @@
 <?php
 require_once __DIR__ . '/../includes/auth.php';
 require_once __DIR__ . '/../includes/grading.php';
+require_once __DIR__ . '/../includes/roster.php';
 $u = require_role('teacher');
 
 $page = $_GET['page'] ?? 'overview';
@@ -27,20 +28,10 @@ $stmt = $pdo->prepare('SELECT * FROM classes WHERE teacher_id = ? ORDER BY creat
 $stmt->execute([$u['id']]);
 $myClasses = $stmt->fetchAll();
 
-$classComputed = [];
-$totalStudents = 0; $passed = 0; $failed = 0;
-foreach ($myClasses as $c) {
-    $s = $pdo->prepare('SELECT * FROM students WHERE class_id = ?');
-    $s->execute([$c['id']]);
-    $rows = $s->fetchAll();
-    $p = 0;
-    foreach ($rows as $row) {
-        $g = compute_grade($row, $c);
-        if ($g['passed']) { $p++; $passed++; } else { $failed++; }
-    }
-    $classComputed[$c['id']] = ['passed' => $p, 'total' => count($rows)];
-    $totalStudents += count($rows);
-}
+$classComputed = class_statistics($pdo, array_column($myClasses, 'id'));
+$totalStudents = array_sum(array_column($classComputed, 'total'));
+$passed = array_sum(array_column($classComputed, 'passed'));
+$failed = array_sum(array_column($classComputed, 'failed'));
 $passRate = ($passed + $failed) > 0 ? round(($passed / ($passed + $failed)) * 100) : 0;
 ?>
 
@@ -75,7 +66,7 @@ $passRate = ($passed + $failed) > 0 ? round(($passed / ($passed + $failed)) * 10
       <div class="card-body">
         <div class="stat-icon bg-emerald">📈</div>
         <p class="stat-value"><?= $passRate ?>%</p>
-        <p class="stat-label">Pass Rate</p>
+        <p class="stat-label">Pass Rate (completed grades)</p>
       </div>
     </div>
   </div>
@@ -94,7 +85,7 @@ $passRate = ($passed + $failed) > 0 ? round(($passed / ($passed + $failed)) * 10
   <div class="card-body">
     <h5 class="section-title">My Classes</h5>
     <div class="row g-3">
-      <?php foreach ($myClasses as $c): $cc = $classComputed[$c['id']]; $rate = $cc['total'] ? round(($cc['passed']/$cc['total'])*100) : 0; ?>
+      <?php foreach ($myClasses as $c): $cc = $classComputed[$c['id']]; $rate = $cc['passRate'] ?? 0; ?>
       <div class="col-sm-6 col-xl-4">
         <div class="class-card" style="cursor:default;">
           <p class="code"><?= h($c['code']) ?></p>
@@ -129,7 +120,7 @@ $passRate = ($passed + $failed) > 0 ? round(($passed / ($passed + $failed)) * 10
 <div class="row g-3">
   <?php foreach ($myClasses as $c): $cc = $classComputed[$c['id']]; ?>
   <div class="col-sm-6 col-xl-4">
-    <div class="class-card" onclick="location.href='class.php?id=<?= $c['id'] ?>'">
+    <div class="class-card" data-class-url="class.php?id=<?= (int)$c['id'] ?>" role="link" tabindex="0">
       <div class="d-flex justify-content-between align-items-start">
         <div>
           <p class="code"><?= h($c['code']) ?></p>
@@ -147,7 +138,7 @@ $passRate = ($passed + $failed) > 0 ? round(($passed / ($passed + $failed)) * 10
           <i class="bi bi-people"></i> <?= $cc['total'] ?> students
         </span>
         <button class="btn btn-outline-danger btn-sm" style="font-size:.75rem;"
-                onclick="event.stopPropagation(); deleteClass(<?= $c['id'] ?>, <?= json_encode($c['code']) ?>)">
+                data-action="delete-class" data-id="<?= (int)$c['id'] ?>" data-name="<?= h($c['code']) ?>">
           <i class="bi bi-trash"></i>
         </button>
       </div>

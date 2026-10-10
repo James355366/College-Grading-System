@@ -324,3 +324,8 @@ code.mono { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-si
   border: 1px solid #fecaca; border-radius: .45rem; padding: .5rem; background: #fff; cursor: pointer;
 }
 .remove-btn-full:hover { background: #fef2f2; }
+
+/* Preserve roster visibility when responsive display rules apply. */
+[data-row-id][hidden] { display: none !important; }
+
+.badge-incomplete { background: #fef3c7; color: #92400e; }

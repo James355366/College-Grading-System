@@ -90,13 +90,14 @@ CREATE TABLE students (
   class_id INT NOT NULL,
   student_id VARCHAR(50) NOT NULL,
   name VARCHAR(200) NOT NULL,
-  quiz DECIMAL(5,2) NOT NULL DEFAULT 0,
-  oral DECIMAL(5,2) NOT NULL DEFAULT 0,
-  attendance DECIMAL(5,2) NOT NULL DEFAULT 0,
-  prelim DECIMAL(5,2) NOT NULL DEFAULT 0,
-  final_exam DECIMAL(5,2) NOT NULL DEFAULT 0,
-  performance_task DECIMAL(5,2) NOT NULL DEFAULT 0,
-  activity_output DECIMAL(5,2) NOT NULL DEFAULT 0,
+  quiz DECIMAL(5,2) NULL DEFAULT NULL,
+  oral DECIMAL(5,2) NULL DEFAULT NULL,
+  attendance DECIMAL(5,2) NULL DEFAULT NULL,
+  prelim DECIMAL(5,2) NULL DEFAULT NULL,
+  final_exam DECIMAL(5,2) NULL DEFAULT NULL,
+  performance_task DECIMAL(5,2) NULL DEFAULT NULL,
+  activity_output DECIMAL(5,2) NULL DEFAULT NULL,
+  CONSTRAINT unique_class_student UNIQUE (class_id, student_id),
   CONSTRAINT fk_students_class FOREIGN KEY (class_id) REFERENCES classes(id) ON DELETE CASCADE
 ) ENGINE=InnoDB;
 
@@ -138,3 +139,11 @@ INSERT INTO students (class_id, student_id, name, quiz, oral, attendance, prelim
 (2, '2023-00344', 'Ignacio, Kaye R.', 79, 92, 88, 78, 94, 91, 93),
 (2, '2023-00366', 'Javier, Leo M.', 89, 84, 97, 92, 78, 85, 82),
 (2, '2023-00388', 'Lopez, Andrea C.', 84, 87, 95, 74, 90, 97, 94);
+
+-- Login throttling; no demo or secret values are stored here.
+CREATE TABLE IF NOT EXISTS login_attempts (
+  bucket CHAR(64) PRIMARY KEY,
+  attempts INT NOT NULL,
+  started_at DATETIME NOT NULL,
+  INDEX idx_login_started (started_at)
+) ENGINE=InnoDB;

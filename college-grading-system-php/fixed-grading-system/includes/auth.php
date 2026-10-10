@@ -6,6 +6,7 @@ if (session_status() === PHP_SESSION_NONE) {
         'lifetime' => 0,
         'path' => '/',
         'httponly' => true,
+        'secure' => APP_ENV === 'production' || (!empty($_SERVER['HTTPS']) && $_SERVER['HTTPS'] !== 'off'),
         'samesite' => 'Lax',
     ]);
     session_start();
@@ -24,8 +25,8 @@ function csrf_field(): string {
     return '<input type="hidden" name="csrf_token" value="' . htmlspecialchars(csrf_token()) . '">';
 }
 
-function verify_csrf(?string $token): bool {
-    return $token !== null && !empty($_SESSION['csrf_token']) && hash_equals($_SESSION['csrf_token'], $token);
+function verify_csrf($token): bool {
+    return is_string($token) && !empty($_SESSION['csrf_token']) && hash_equals($_SESSION['csrf_token'], $token);
 }
 
 /**
@@ -33,6 +34,11 @@ function verify_csrf(?string $token): bool {
  * a JSON 403 error if invalid.
  */
 function require_csrf_or_die(): void {
+    if (($_SERVER['REQUEST_METHOD'] ?? '') !== 'POST') {
+        http_response_code(405);
+        header('Allow: POST');
+        exit;
+    }
     $token = $_POST['csrf_token'] ?? ($_SERVER['HTTP_X_CSRF_TOKEN'] ?? null);
     if (!verify_csrf($token)) {
         http_response_code(403);
@@ -66,7 +72,20 @@ function base_url(): string {
 /* --------------------------------------------------------------- SESSION */
 
 function current_session(): ?array {
-    return $_SESSION['user'] ?? null;
+    $u = $_SESSION['user'] ?? null;
+    if (!$u) return null;
+    $table = ($u['role'] ?? '') === 'admin' ? 'admins' : 'teachers';
+    $sql = "SELECT id, username, name FROM $table WHERE id = ?";
+    if ($table === 'teachers') $sql .= " AND status = 'active'";
+    $stmt = get_db()->prepare($sql);
+    $stmt->execute([$u['id']]);
+    $account = $stmt->fetch();
+    if (!$account) {
+        $_SESSION = [];
+        session_regenerate_id(true);
+        return null;
+    }
+    return $_SESSION['user'] = array_merge($u, $account);
 }
 
 function require_login(): array {
@@ -98,6 +117,17 @@ function attempt_login(string $username, string $password): array {
     $pdo = get_db();
     $username = trim($username);
 
+    // Both IP and account limits persist across new sessions and concurrent requests.
+    $retryAfter = login_throttle($pdo, $username);
+    if ($retryAfter > 0) {
+        http_response_code(429);
+        header('Retry-After: ' . $retryAfter);
+        return ['ok' => false, 'message' => 'Too many sign-in attempts. Please try again later.'];
+    }
+    if (APP_ENV === 'production' && in_array($password, ['admin123', 'teacher123'], true)) {
+        return ['ok' => false, 'message' => 'Invalid username or password.'];
+    }
+
     // Try admin table first
     $stmt = $pdo->prepare('SELECT * FROM admins WHERE username = ? LIMIT 1');
     $stmt->execute([$username]);
@@ -110,6 +140,7 @@ function attempt_login(string $username, string $password): array {
             'name' => $admin['name'],
         ];
         session_regenerate_id(true);
+        clear_login_attempts($pdo, $username);
         add_audit_log('LOGIN', 'Administrator logged in.');
         return ['ok' => true];
     }
@@ -129,6 +160,7 @@ function attempt_login(string $username, string $password): array {
             'name' => $teacher['name'],
         ];
         session_regenerate_id(true);
+        clear_login_attempts($pdo, $username);
         add_audit_log('LOGIN', "Teacher {$teacher['name']} logged in.", 'teacher', $teacher['name']);
         return ['ok' => true];
     }
@@ -158,4 +190,43 @@ function add_audit_log(string $action, string $details, ?string $roleOverride = 
     $role = $roleOverride ?? ($u['role'] ?? 'admin');
     $stmt = $pdo->prepare('INSERT INTO audit_logs (actor, role, action, details) VALUES (?, ?, ?, ?)');
     $stmt->execute([$actor, $role, $action, $details]);
+}
+
+// Reserve attempts atomically before password verification to prevent concurrent bypass.
+function login_account_key(PDO $pdo, string $username): string {
+    $stmt = $pdo->prepare('SELECT username FROM admins WHERE username = ? UNION SELECT username FROM teachers WHERE username = ?');
+    $stmt->execute([$username, $username]);
+    $canonical = $stmt->fetchColumn();
+    return hash('sha256', 'account:' . strtolower($canonical === false ? $username : $canonical));
+}
+
+function login_throttle(PDO $pdo, string $username): int {
+    $limits = [login_account_key($pdo, $username) => 5,
+        hash('sha256', 'ip:' . ($_SERVER['REMOTE_ADDR'] ?? 'unknown')) => 100];
+    ksort($limits);
+    $pdo->beginTransaction();
+    try {
+        $retry = 0;
+        foreach ($limits as $key => $limit) {
+            $stmt = $pdo->prepare('INSERT INTO login_attempts (bucket, attempts, started_at) VALUES (?, 1, UTC_TIMESTAMP())
+                ON DUPLICATE KEY UPDATE attempts = IF(started_at <= UTC_TIMESTAMP() - INTERVAL 15 MINUTE, 1, attempts + 1),
+                started_at = IF(started_at <= UTC_TIMESTAMP() - INTERVAL 15 MINUTE, UTC_TIMESTAMP(), started_at)');
+            $stmt->execute([$key]);
+            $stmt = $pdo->prepare('SELECT attempts, GREATEST(1, 900 - TIMESTAMPDIFF(SECOND, started_at, UTC_TIMESTAMP())) AS remaining FROM login_attempts WHERE bucket = ?');
+            $stmt->execute([$key]);
+            $row = $stmt->fetch();
+            if ((int)$row['attempts'] > $limit) $retry = max($retry, (int)$row['remaining']);
+        }
+        $pdo->commit();
+        // Keep inactive buckets for at most one day.
+        $pdo->exec('DELETE FROM login_attempts WHERE started_at < UTC_TIMESTAMP() - INTERVAL 1 DAY');
+        return $retry;
+    } catch (Throwable $e) {
+        if ($pdo->inTransaction()) $pdo->rollBack();
+        throw $e;
+    }
+}
+
+function clear_login_attempts(PDO $pdo, string $username): void {
+    $pdo->prepare('DELETE FROM login_attempts WHERE bucket = ?')->execute([login_account_key($pdo, $username)]);
 }

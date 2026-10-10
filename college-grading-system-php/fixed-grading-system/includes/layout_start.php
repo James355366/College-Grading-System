@@ -39,13 +39,14 @@ $u = current_session();
     </nav>
 
     <div class="sidebar-foot">
-      <div class="saved-line"><i class="bi bi-floppy me-1"></i><span>Auto-saved</span></div>
+      <div class="saved-line"><i class="bi bi-floppy me-1"></i><span data-save-status role="status">All changes saved</span></div>
       <div class="who-row">
         <div class="overflow-hidden">
           <p class="uname"><?= h($u['name'] ?? '') ?></p>
           <p class="uhandle">@<?= h($u['username'] ?? '') ?></p>
         </div>
         <form method="post" action="<?= h(base_url()) ?>/logout.php">
+          <?= csrf_field() ?>
           <button type="submit" class="logout-btn" title="Logout"><i class="bi bi-power"></i></button>
         </form>
       </div>
@@ -73,14 +74,15 @@ $u = current_session();
   </nav>
 
   <div class="sidebar-foot">
-    <div class="saved-line"><i class="bi bi-floppy me-1"></i><span>Auto-saved</span></div>
+    <div class="saved-line"><i class="bi bi-floppy me-1"></i><span data-save-status role="status">All changes saved</span></div>
     <div class="who-row">
       <div class="overflow-hidden">
         <p class="uname"><?= h($u['name'] ?? '') ?></p>
         <p class="uhandle">@<?= h($u['username'] ?? '') ?></p>
       </div>
       <form method="post" action="<?= h(base_url()) ?>/logout.php">
-        <button type="submit" class="logout-btn" title="Logout"><i class="bi bi-power"></i></button>
+        <?= csrf_field() ?>
+          <button type="submit" class="logout-btn" title="Logout"><i class="bi bi-power"></i></button>
       </form>
     </div>
   </div>

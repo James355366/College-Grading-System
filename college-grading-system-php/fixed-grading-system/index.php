@@ -12,7 +12,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
     if (!verify_csrf($_POST['csrf_token'] ?? null)) {
         $error = 'Session expired. Please try again.';
     } else {
-        $result = attempt_login($_POST['username'] ?? '', $_POST['password'] ?? '');
+        $result = attempt_login(is_string($_POST['username'] ?? null) ? $_POST['username'] : '', is_string($_POST['password'] ?? null) ? $_POST['password'] : '');
         if ($result['ok']) {
             $u = current_session();
             header('Location: ' . base_url() . ($u['role'] === 'admin' ? '/admin/dashboard.php' : '/teacher/dashboard.php'));
@@ -99,17 +99,20 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
         </button>
       </form>
 
+      <?php if (APP_ENV !== 'production' && setting('APP_DEMO_MODE') === '1'): ?>
       <hr class="my-4" style="border-color:#f1f5f9;">
       <p class="text-muted mb-2" style="font-size:.75rem;">Quick demo access</p>
       <div class="btn-demo-row">
         <button type="button" class="btn-demo" onclick="fillDemo('admin')">🛡️ Admin demo</button>
         <button type="button" class="btn-demo" onclick="fillDemo('teacher')">🔑 Teacher demo</button>
       </div>
+      <?php endif; ?>
     </div>
 
   </div>
 </div>
 
+<?php if (APP_ENV !== 'production' && setting('APP_DEMO_MODE') === '1'): ?>
 <script>
 function fillDemo(role) {
   const u = document.querySelector('input[name=username]');
@@ -118,6 +121,7 @@ function fillDemo(role) {
   else { u.value = 'teacher'; p.value = 'teacher123'; }
 }
 </script>
+<?php endif; ?>
 <script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.3/dist/js/bootstrap.bundle.min.js"></script>
 </body>
 </html>

@@ -7,6 +7,8 @@ $classId = (int)($_POST['class_id'] ?? 0);
 $name = trim($_POST['name'] ?? '');
 $studentId = trim($_POST['student_id'] ?? '');
 
+if (strlen($name) > 200 || strlen($studentId) > 50) api_json(['ok' => false, 'message' => 'Student name or ID is too long.']);
+
 if ($name === '') api_json(['ok' => false, 'message' => 'Student name is required.']);
 
 $pdo = get_db();
@@ -16,12 +18,22 @@ $cls = $stmt->fetch();
 if (!$cls) api_json(['ok' => false, 'message' => 'Class not found or access denied.']);
 
 if ($studentId === '') {
-    $studentId = 'S-' . random_int(10000, 99999);
+    $studentId = 'S-' . bin2hex(random_bytes(8));
 }
 
 $ins = $pdo->prepare('INSERT INTO students (class_id, student_id, name) VALUES (?, ?, ?)');
-$ins->execute([$classId, $studentId, $name]);
+try {
+    $ins->execute([$classId, $studentId, $name]);
+} catch (PDOException $e) {
+    if (($e->errorInfo[1] ?? null) === 1062) {
+        http_response_code(409);
+        api_json(['ok' => false, 'message' => 'This student ID already exists in this class.']);
+    }
+    throw $e;
+}
+
+$newStudentId = (int)$pdo->lastInsertId();
 
 add_audit_log('ADD_STUDENT', "Added student \"$name\" to class {$cls['code']}.");
 
-api_json(['ok' => true, 'id' => $pdo->lastInsertId()]);
+api_json(['ok' => true, 'id' => $newStudentId]);

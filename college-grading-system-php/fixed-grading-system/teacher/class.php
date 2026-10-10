@@ -1,6 +1,7 @@
 <?php
 require_once __DIR__ . '/../includes/auth.php';
 require_once __DIR__ . '/../includes/grading.php';
+require_once __DIR__ . '/../includes/roster.php';
 $u = require_role('teacher');
 
 $pdo     = get_db();
@@ -33,9 +34,30 @@ require __DIR__ . '/../includes/layout_start.php';
 </div>
 
 <?php else:
-  $stmt = $pdo->prepare('SELECT * FROM students WHERE class_id = ? ORDER BY id ASC');
-  $stmt->execute([$cls['id']]);
+  $search = is_string($_GET['q'] ?? null) ? trim($_GET['q']) : '';
+  $status = in_array($_GET['status'] ?? '', ['passed', 'failed', 'incomplete'], true) ? $_GET['status'] : 'all';
+  $rosterPage = max(1, (int)($_GET['roster_page'] ?? 1));
+  $where = 's.class_id = ?';
+  $params = [$cls['id']];
+  if ($search !== '') {
+      $where .= " AND (LOCATE(?, s.name) > 0 OR LOCATE(?, s.student_id) > 0)";
+      $params[] = $search; $params[] = $search;
+  }
+  $gradeSql = final_grade_sql();
+  if ($status === 'passed') $where .= " AND $gradeSql >= 75";
+  if ($status === 'failed') $where .= " AND $gradeSql < 75";
+  if ($status === 'incomplete') $where .= " AND $gradeSql IS NULL";
+  $from = ' FROM students s JOIN classes c ON c.id = s.class_id WHERE ' . $where;
+  $stmt = $pdo->prepare('SELECT COUNT(*)' . $from);
+  $stmt->execute($params);
+  $matching = (int)$stmt->fetchColumn();
+  $pageCount = max(1, (int)ceil($matching / 50));
+  $rosterPage = min($rosterPage, $pageCount);
+  $offset = ($rosterPage - 1) * 50;
+  $stmt = $pdo->prepare('SELECT s.*' . $from . " ORDER BY s.id ASC LIMIT 50 OFFSET $offset");
+  $stmt->execute($params);
   $students = $stmt->fetchAll();
+  $statistics = class_statistics($pdo, [$cls['id']])[$cls['id']];
   $tab = ($_GET['tab'] ?? 'grades') === 'weights' ? 'weights' : 'grades';
 ?>
 
@@ -72,6 +94,50 @@ require __DIR__ . '/../includes/layout_start.php';
 
 <?php if ($tab === 'grades'): ?>
 
+<!-- Class performance and roster tools -->
+<section class="card border-0 shadow-sm mb-3" aria-label="Class performance">
+  <div class="card-body">
+    <h3 class="h6">Class performance</h3>
+    <p class="text-muted small">Class averages and pass rates use completed grades only. Blank assessments are incomplete; recorded zero scores count.</p>
+    <div class="row g-3" id="classStatistics" data-statistics="<?= h(json_encode($statistics)) ?>" aria-live="polite" aria-atomic="true">
+      <div class="col-6 col-md-3"><span class="text-muted small">Average grade</span><p class="fw-bold mb-0" id="statAverage"><?= $statistics['average'] === null ? '—' : number_format($statistics['average'], 2) . '%' ?></p></div>
+      <div class="col-6 col-md-3"><span class="text-muted small">Pass rate</span><p class="fw-bold mb-0" id="statPassRate"><?= $statistics['passRate'] === null ? '—' : number_format($statistics['passRate'], 1) . '%' ?></p></div>
+      <div class="col-6 col-md-3"><span class="text-muted small">Passing</span><p class="fw-bold mb-0" id="statPassed"><?= $statistics['passed'] ?></p></div>
+      <div class="col-6 col-md-3"><span class="text-muted small">Failing</span><p class="fw-bold mb-0" id="statFailed"><?= $statistics['failed'] ?></p></div>
+      <div class="col-6 col-md-3"><span class="text-muted small">Incomplete</span><p class="fw-bold mb-0" id="statIncomplete"><?= $statistics['incomplete'] ?></p></div>
+    </div>
+  </div>
+</section>
+<form method="get" class="row g-2 align-items-end mb-3" id="rosterFilters">
+  <input type="hidden" name="id" value="<?= (int)$cls['id'] ?>">
+  <div class="col-12 col-sm-6">
+    <label for="studentSearch" class="form-label small fw-semibold">Search students</label>
+    <input type="search" id="studentSearch" name="q" value="<?= h($search) ?>" class="form-control form-control-sm" placeholder="Name or student ID" aria-controls="gradeTable studentCards">
+  </div>
+  <div class="col-8 col-sm-4">
+    <label for="studentStatus" class="form-label small fw-semibold">Grade status</label>
+    <select id="studentStatus" name="status" class="form-select form-select-sm" aria-controls="gradeTable studentCards">
+      <option value="all" <?= $status === 'all' ? 'selected' : '' ?>>All students</option>
+      <option value="passed" <?= $status === 'passed' ? 'selected' : '' ?>>Passed</option>
+      <option value="incomplete" <?= $status === 'incomplete' ? 'selected' : '' ?>>Incomplete</option>
+      <option value="failed" <?= $status === 'failed' ? 'selected' : '' ?>>Failed</option>
+    </select>
+  </div>
+  <div class="col-4 col-sm-2"><button type="submit" class="btn btn-primary btn-sm w-100 mb-1">Apply</button><button type="button" id="clearStudentFilters" class="btn btn-outline-secondary btn-sm w-100">Clear</button></div>
+  <div class="col-12"><p id="studentFilterCount" class="text-muted small mb-0" role="status">Showing <?= count($students) ?> of <?= $matching ?> matching students (<?= $statistics['total'] ?> in class)</p></div>
+</form>
+<p id="studentFilterEmpty" class="text-center text-muted py-3" <?= $matching > 0 || $statistics['total'] === 0 ? 'hidden' : '' ?>>No students match your search and grade status.</p>
+<nav class="d-flex align-items-center gap-3 mb-3" aria-label="Roster pages">
+  <?php if ($rosterPage > 1): ?><a href="?<?= h(http_build_query(['id' => $cls['id'], 'q' => $search, 'status' => $status, 'roster_page' => $rosterPage - 1])) ?>">Previous</a><?php endif; ?>
+  <span>Page <?= $rosterPage ?> of <?= $pageCount ?></span>
+  <?php if ($rosterPage < $pageCount): ?><a href="?<?= h(http_build_query(['id' => $cls['id'], 'q' => $search, 'status' => $status, 'roster_page' => $rosterPage + 1])) ?>">Next</a><?php endif; ?>
+</nav>
+
+<div class="mb-3" aria-live="polite">
+  <span data-save-status>All changes saved</span>
+  <button type="button" id="retryScoreSaves" class="btn btn-outline-danger btn-sm ms-2" hidden>Retry unsaved scores</button>
+  <p id="rosterRefreshHint" class="text-muted small mb-0" hidden>Scores updated. Apply the filters again to refresh matching students.</p>
+</div>
 <!-- Add Student Bar -->
 <div class="add-student-bar">
   <div class="field-wrap flex-grow-1">
@@ -90,7 +156,7 @@ require __DIR__ . '/../includes/layout_start.php';
 <!-- Desktop grade table -->
 <div class="gradesheet-wrap">
   <div class="table-responsive">
-    <table class="gradesheet">
+    <table class="gradesheet" id="gradeTable">
       <thead>
         <tr class="r1">
           <th rowspan="2" class="stu-col">Student</th>
@@ -106,50 +172,48 @@ require __DIR__ . '/../includes/layout_start.php';
           <th rowspan="2" class="grp-final"></th>
         </tr>
         <tr class="r2">
-          <th class="stu-col">ID Number</th>
           <th>Quiz</th><th>Oral</th><th>Attend.</th>
           <th>Prelim</th><th>Final</th>
-          <th>Score</th><th>Score</th>
         </tr>
       </thead>
       <tbody>
         <?php foreach ($students as $s): $g = compute_grade($s, $cls); ?>
-        <tr data-row-id="<?= $s['id'] ?>">
+        <tr data-row-id="<?= $s['id'] ?>" data-student-search="<?= h($s['name'] . ' ' . $s['student_id']) ?>" data-passed="<?= $g['passed'] ? 'true' : 'false' ?>" data-final-percent="<?= h($g['finalPercent']) ?>" data-grade-status="<?= h($g['status']) ?>">
           <td class="stu-col">
             <p class="stu-name"><?= h($s['name']) ?></p>
             <p class="stu-id"><?= h($s['student_id']) ?></p>
           </td>
           <?php foreach (['quiz','oral','attendance','prelim','final_exam'] as $f): ?>
           <td>
-            <input type="number" class="score-input" min="0" max="100" value="<?= h($s[$f]) ?>"
+            <input type="number" class="score-input" min="0" max="100" step="0.01" aria-label="<?= h($s['name'] . ' ' . $f) ?>" value="<?= h($s[$f]) ?>"
                    data-student-id="<?= $s['id'] ?>" data-class-id="<?= $cls['id'] ?>" data-field="<?= $f ?>">
           </td>
           <?php endforeach; ?>
-          <td class="lec-cell js-lecture"><?= $g['lectureGrade'] ?></td>
+          <td class="lec-cell js-lecture"><?= $g['lectureGrade'] ?? '—' ?></td>
           <?php foreach (['performance_task','activity_output'] as $f): ?>
           <td>
-            <input type="number" class="score-input" min="0" max="100" value="<?= h($s[$f]) ?>"
+            <input type="number" class="score-input" min="0" max="100" step="0.01" aria-label="<?= h($s['name'] . ' ' . $f) ?>" value="<?= h($s[$f]) ?>"
                    data-student-id="<?= $s['id'] ?>" data-class-id="<?= $cls['id'] ?>" data-field="<?= $f ?>">
           </td>
           <?php endforeach; ?>
-          <td class="lab-cell js-lab"><?= $g['labGrade'] ?></td>
-          <td class="fin-cell js-final"><?= $g['finalPercent'] ?>%</td>
-          <td class="gpa-cell js-gpa"><?= number_format($g['gpa'], 2) ?></td>
+          <td class="lab-cell js-lab"><?= $g['labGrade'] ?? '—' ?></td>
+          <td class="fin-cell js-final"><?= $g['finalPercent'] === null ? '—' : $g['finalPercent'] . '%' ?></td>
+          <td class="gpa-cell js-gpa"><?= ($g['gpa'] === null ? '—' : number_format($g['gpa'], 2)) ?></td>
           <td>
-            <span class="badge js-remarks <?= $g['passed']?'badge-pass':'badge-fail' ?>">
-              <?= $g['passed']?'PASSED':'FAILED' ?>
+            <span class="badge js-remarks <?= $g['status'] === 'incomplete' ? 'badge-incomplete' : ($g['passed'] ? 'badge-pass' : 'badge-fail') ?>">
+              <?= strtoupper($g['status']) ?>
             </span>
           </td>
           <td>
             <button class="btn btn-sm btn-outline-danger" title="Remove student"
-                    onclick="removeStudent(<?= $s['id'] ?>, <?= json_encode($s['name']) ?>)">
+                    data-action="remove-student" data-id="<?= (int)$s['id'] ?>" data-name="<?= h($s['name']) ?>">
               <i class="bi bi-trash"></i>
             </button>
           </td>
         </tr>
         <?php endforeach; ?>
-        <?php if (!$students): ?>
-        <tr><td colspan="16" class="text-center text-muted py-4">No students yet. Add students above to begin encoding grades.</td></tr>
+        <?php if (!$students && $statistics['total'] === 0): ?>
+        <tr><td colspan="14" class="text-center text-muted py-4">No students yet. Add students above to begin encoding grades.</td></tr>
         <?php endif; ?>
       </tbody>
     </table>
@@ -157,16 +221,16 @@ require __DIR__ . '/../includes/layout_start.php';
 </div>
 
 <!-- Mobile student cards -->
-<div class="stu-cards mt-2">
+<div class="stu-cards mt-2" id="studentCards">
   <?php foreach ($students as $s): $g = compute_grade($s, $cls); ?>
-  <div class="stu-card" data-row-id="<?= $s['id'] ?>">
+  <div class="stu-card" data-row-id="<?= $s['id'] ?>" data-student-search="<?= h($s['name'] . ' ' . $s['student_id']) ?>" data-passed="<?= $g['passed'] ? 'true' : 'false' ?>" data-final-percent="<?= h($g['finalPercent']) ?>" data-grade-status="<?= h($g['status']) ?>">
     <div class="d-flex align-items-start justify-content-between gap-2">
       <div>
         <p class="stu-name"><?= h($s['name']) ?></p>
         <p class="stu-id"><?= h($s['student_id']) ?></p>
       </div>
-      <span class="badge js-remarks <?= $g['passed']?'badge-pass':'badge-fail' ?>">
-        <?= $g['passed']?'PASSED':'FAILED' ?>
+      <span class="badge js-remarks <?= $g['status'] === 'incomplete' ? 'badge-incomplete' : ($g['passed'] ? 'badge-pass' : 'badge-fail') ?>">
+        <?= strtoupper($g['status']) ?>
       </span>
     </div>
 
@@ -174,7 +238,7 @@ require __DIR__ . '/../includes/layout_start.php';
     <div class="score-grid">
       <?php foreach ([['quiz','Quiz'],['oral','Oral'],['attendance','Attend.']] as [$f,$lbl]): ?>
       <label><?= $lbl ?>
-        <input type="number" class="score-input form-control form-control-sm" min="0" max="100"
+        <input type="number" class="score-input form-control form-control-sm" min="0" max="100" step="0.01"
                value="<?= h($s[$f]) ?>" data-student-id="<?= $s['id'] ?>" data-class-id="<?= $cls['id'] ?>" data-field="<?= $f ?>">
       </label>
       <?php endforeach; ?>
@@ -184,7 +248,7 @@ require __DIR__ . '/../includes/layout_start.php';
     <div class="score-grid">
       <?php foreach ([['prelim','Prelim'],['final_exam','Final']] as [$f,$lbl]): ?>
       <label><?= $lbl ?>
-        <input type="number" class="score-input form-control form-control-sm" min="0" max="100"
+        <input type="number" class="score-input form-control form-control-sm" min="0" max="100" step="0.01"
                value="<?= h($s[$f]) ?>" data-student-id="<?= $s['id'] ?>" data-class-id="<?= $cls['id'] ?>" data-field="<?= $f ?>">
       </label>
       <?php endforeach; ?>
@@ -194,24 +258,24 @@ require __DIR__ . '/../includes/layout_start.php';
     <div class="score-grid">
       <?php foreach ([['performance_task','Perf. Task'],['activity_output','Activity']] as [$f,$lbl]): ?>
       <label><?= $lbl ?>
-        <input type="number" class="score-input form-control form-control-sm" min="0" max="100"
+        <input type="number" class="score-input form-control form-control-sm" min="0" max="100" step="0.01"
                value="<?= h($s[$f]) ?>" data-student-id="<?= $s['id'] ?>" data-class-id="<?= $cls['id'] ?>" data-field="<?= $f ?>">
       </label>
       <?php endforeach; ?>
     </div>
 
     <div class="summary">
-      <div><p class="lbl">Lecture</p><p class="fw-bold mb-0 js-lecture" style="color:#4338ca;"><?= $g['lectureGrade'] ?></p></div>
-      <div><p class="lbl">Lab</p><p class="fw-bold mb-0 js-lab" style="color:#047857;"><?= $g['labGrade'] ?></p></div>
-      <div><p class="lbl">Final %</p><p class="fw-bold mb-0 js-final" style="color:#1e293b;"><?= $g['finalPercent'] ?>%</p></div>
+      <div><p class="lbl">Lecture</p><p class="fw-bold mb-0 js-lecture" style="color:#4338ca;"><?= $g['lectureGrade'] ?? '—' ?></p></div>
+      <div><p class="lbl">Lab</p><p class="fw-bold mb-0 js-lab" style="color:#047857;"><?= $g['labGrade'] ?? '—' ?></p></div>
+      <div><p class="lbl">Final %</p><p class="fw-bold mb-0 js-final" style="color:#1e293b;"><?= $g['finalPercent'] === null ? '—' : $g['finalPercent'] . '%' ?></p></div>
     </div>
-    <p class="gpaline">GPA Equivalent: <span class="fw-semibold js-gpa" style="color:#475569;"><?= number_format($g['gpa'],2) ?></span></p>
-    <button class="remove-btn-full" onclick="removeStudent(<?= $s['id'] ?>, <?= json_encode($s['name']) ?>)">
+    <p class="gpaline">GPA Equivalent: <span class="fw-semibold js-gpa" style="color:#475569;"><?= ($g['gpa'] === null ? '—' : number_format($g['gpa'], 2)) ?></span></p>
+    <button class="remove-btn-full" data-action="remove-student" data-id="<?= (int)$s['id'] ?>" data-name="<?= h($s['name']) ?>">
       <i class="bi bi-trash me-1"></i> Remove student
     </button>
   </div>
   <?php endforeach; ?>
-  <?php if (!$students): ?>
+  <?php if (!$students && $statistics['total'] === 0): ?>
   <p class="text-center text-muted py-4" style="font-size:.875rem;">No students yet.</p>
   <?php endif; ?>
 </div>
@@ -326,7 +390,7 @@ require __DIR__ . '/../includes/layout_start.php';
     msg.className   = res.ok ? 'msg-ok' : 'msg-err';
     msg.textContent = res.ok ? '✓ Weights saved successfully.' : (res.message || 'Unable to save weights.');
   }
-  recalcWeightsTotal('cwScope');
+
 </script>
 
 <?php endif; ?>

@@ -1,6 +1,7 @@
 <?php
 require_once __DIR__ . '/../includes/auth.php';
 require_once __DIR__ . '/../includes/grading.php';
+require_once __DIR__ . '/../includes/roster.php';
 require_role('admin');
 
 $page    = $_GET['page'] ?? 'overview';
@@ -34,13 +35,9 @@ require __DIR__ . '/../includes/layout_start.php';
   $totalClasses   = (int)$pdo->query('SELECT COUNT(*) c FROM classes')->fetch()['c'];
   $totalStudents  = (int)$pdo->query('SELECT COUNT(*) c FROM students')->fetch()['c'];
   $classes = $pdo->query('SELECT c.*, t.name AS teacher_name FROM classes c LEFT JOIN teachers t ON t.id=c.teacher_id ORDER BY c.created_at DESC')->fetchAll();
-  $passed = 0; $failed = 0; $classComputed = [];
-  foreach ($classes as $c) {
-      $st = $pdo->prepare('SELECT * FROM students WHERE class_id = ?'); $st->execute([$c['id']]); $rows = $st->fetchAll();
-      $p = 0;
-      foreach ($rows as $s) { $g = compute_grade($s, $c); if ($g['passed']) { $passed++; $p++; } else { $failed++; } }
-      $classComputed[$c['id']] = ['passed' => $p, 'total' => count($rows)];
-  }
+  $classComputed = class_statistics($pdo, array_column($classes, 'id'));
+  $passed = array_sum(array_column($classComputed, 'passed'));
+  $failed = array_sum(array_column($classComputed, 'failed'));
   $passRate = ($passed + $failed) > 0 ? round(($passed / ($passed + $failed)) * 100) : 0;
 ?>
 
@@ -80,7 +77,7 @@ require __DIR__ . '/../includes/layout_start.php';
       <div class="card-body">
         <div class="stat-icon bg-amber">📈</div>
         <p class="stat-value"><?= $passRate ?>%</p>
-        <p class="stat-label">Overall Pass Rate</p>
+        <p class="stat-label">Overall Pass Rate (completed grades)</p>
         <p class="stat-sub"><?= $passed ?> passed / <?= $failed ?> failed</p>
       </div>
     </div>
@@ -96,7 +93,7 @@ require __DIR__ . '/../includes/layout_start.php';
           <tr><th>Class</th><th>Teacher</th><th>Students</th><th>Pass Rate</th></tr>
         </thead>
         <tbody>
-          <?php foreach ($classes as $c): $cc = $classComputed[$c['id']]; $rate = $cc['total'] ? round(($cc['passed']/$cc['total'])*100) : 0; ?>
+          <?php foreach ($classes as $c): $cc = $classComputed[$c['id']]; $rate = $cc['passRate'] ?? 0; ?>
           <tr>
             <td>
               <p class="fw-semibold text-dark mb-0" style="font-size:.875rem;"><?= h($c['code']) ?></p>
@@ -120,7 +117,7 @@ require __DIR__ . '/../includes/layout_start.php';
 </div>
 
 <?php /* ==================== TEACHERS ==================== */ elseif ($page === 'teachers'): ?>
-<?php $teachers = $pdo->query('SELECT * FROM teachers ORDER BY created_at DESC')->fetchAll(); ?>
+<?php $teachers = $pdo->query('SELECT id, username, name, email, department, status FROM teachers ORDER BY created_at DESC')->fetchAll(); ?>
 
 <div class="d-flex align-items-center justify-content-between flex-wrap gap-2 mb-3">
   <p class="text-muted mb-0" style="font-size:.875rem;">Manage teacher accounts that can log in to the system.</p>
@@ -149,10 +146,10 @@ require __DIR__ . '/../includes/layout_start.php';
             <button class="btn btn-sm btn-outline-secondary me-1" title="Toggle status" onclick="toggleTeacher(<?= $t['id'] ?>)">
               <i class="bi bi-power"></i>
             </button>
-            <button class="btn btn-sm btn-outline-primary me-1" title="Edit" onclick='openTeacherModal(<?= json_encode($t) ?>)'>
+            <button class="btn btn-sm btn-outline-primary me-1" title="Edit" data-action="edit-teacher" data-teacher="<?= h(json_encode($t)) ?>">
               <i class="bi bi-pencil"></i>
             </button>
-            <button class="btn btn-sm btn-outline-danger" title="Delete" onclick="deleteTeacher(<?= $t['id'] ?>, <?= json_encode($t['name']) ?>)">
+            <button class="btn btn-sm btn-outline-danger" title="Delete" data-action="delete-teacher" data-id="<?= (int)$t['id'] ?>" data-name="<?= h($t['name']) ?>">
               <i class="bi bi-trash"></i>
             </button>
           </td>
@@ -206,9 +203,10 @@ require __DIR__ . '/../includes/layout_start.php';
 </div>
 
 <script>
-  const teacherModal = new bootstrap.Modal(document.getElementById('teacherModal'));
+  let teacherModal;
 
   function openTeacherModal(t) {
+    teacherModal ??= new bootstrap.Modal(document.getElementById('teacherModal'));
     document.getElementById('teacherFormError').classList.add('d-none');
     if (t) {
       document.getElementById('teacherModalTitle').textContent = 'Edit Teacher';
@@ -357,12 +355,13 @@ require __DIR__ . '/../includes/layout_start.php';
     msg.className   = res.ok ? 'msg-ok' : 'msg-err';
     msg.textContent = res.ok ? '✓ Weights saved successfully.' : (res.message || 'Unable to save weights.');
   }
-  recalcWeightsTotal('dwScope');
+
 </script>
 
 <?php /* ==================== REPORTS ==================== */ elseif ($page === 'reports'): ?>
 <?php
   $classes = $pdo->query('SELECT c.*, t.name AS teacher_name FROM classes c LEFT JOIN teachers t ON t.id=c.teacher_id ORDER BY c.created_at DESC')->fetchAll();
+  $classComputed = class_statistics($pdo, array_column($classes, 'id'));
 ?>
 
 <div class="d-flex align-items-center justify-content-between flex-wrap gap-2 mb-3">
@@ -380,15 +379,14 @@ require __DIR__ . '/../includes/layout_start.php';
           <th>Class</th><th>Teacher</th><th>S.Y. / Semester</th>
           <th class="text-center">Students</th>
           <th class="text-center">Passed</th>
-          <th class="text-center">Failed</th>
+          <th class="text-center">Failed</th><th class="text-center">Incomplete</th>
           <th>Pass Rate</th>
         </tr>
       </thead>
       <tbody>
         <?php foreach ($classes as $c):
-          $stmt = $pdo->prepare('SELECT * FROM students WHERE class_id=?'); $stmt->execute([$c['id']]); $rows = $stmt->fetchAll();
-          $p=0; foreach ($rows as $s) { if (compute_grade($s,$c)['passed']) $p++; }
-          $total = count($rows); $f = $total - $p; $rate = $total ? round(($p/$total)*100) : 0;
+          $summary = $classComputed[$c['id']];
+          $p = $summary['passed']; $total = $summary['total']; $f = $summary['failed']; $rate = $summary['passRate'] ?? 0;
         ?>
         <tr>
           <td>
@@ -402,7 +400,7 @@ require __DIR__ . '/../includes/layout_start.php';
           </td>
           <td class="text-center"><?= $total ?></td>
           <td class="text-center fw-bold text-success"><?= $p ?></td>
-          <td class="text-center fw-bold text-danger"><?= $f ?></td>
+          <td class="text-center fw-bold text-danger"><?= $f ?></td><td class="text-center"><?= $summary['incomplete'] ?></td>
           <td>
             <div class="d-flex align-items-center gap-2">
               <div class="grade-bar"><div class="fill <?= $rate>=75?'fill-pass':'fill-fail' ?>" style="width:<?= $rate ?>%"></div></div>
@@ -411,7 +409,7 @@ require __DIR__ . '/../includes/layout_start.php';
           </td>
         </tr>
         <?php endforeach; ?>
-        <?php if (!$classes): ?><tr><td colspan="7" class="text-center text-muted py-4">No classes to report yet.</td></tr><?php endif; ?>
+        <?php if (!$classes): ?><tr><td colspan="8" class="text-center text-muted py-4">No classes to report yet.</td></tr><?php endif; ?>
       </tbody>
     </table>
   </div>

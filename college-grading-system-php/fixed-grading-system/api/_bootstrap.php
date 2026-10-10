@@ -3,6 +3,11 @@ require_once __DIR__ . '/../includes/auth.php';
 require_once __DIR__ . '/../includes/grading.php';
 
 header('Content-Type: application/json');
+set_exception_handler(function (Throwable $e): void {
+    error_log('API failure: ' . $e->getMessage());
+    http_response_code(500);
+    echo json_encode(['ok' => false, 'message' => 'Unable to complete the request. Please try again.']);
+});
 
 function api_require_login(): array {
     $u = current_session();

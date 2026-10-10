@@ -1,6 +1,8 @@
 <?php
 require_once __DIR__ . '/../includes/auth.php';
 require_once __DIR__ . '/../includes/grading.php';
+require_once __DIR__ . '/../includes/csv.php';
+require_once __DIR__ . '/../includes/roster.php';
 $u = require_role('teacher');
 
 $pdo = get_db();
@@ -27,7 +29,7 @@ foreach ($students as $s) {
         $i++, $s['student_id'], $s['name'], $s['quiz'], $s['oral'], $s['attendance'],
         $g['classStanding'], $s['prelim'], $s['final_exam'], $g['majorExams'], $g['lectureGrade'],
         $g['performanceTask'], $g['activityOutput'], $g['labGrade'], $g['finalPercent'],
-        number_format($g['gpa'], 2), $g['passed'] ? 'PASSED' : 'FAILED',
+        ($g['gpa'] === null ? '' : number_format($g['gpa'], 2)), strtoupper($g['status']),
     ];
 }
 
@@ -55,7 +57,7 @@ if ($format === 'pdf') {
         <?php foreach ($rows as $r): ?>
         <tr>
           <?php foreach ($r as $idx => $val): ?>
-            <td class="<?= $idx === 16 ? ($val === 'PASSED' ? 'pass' : 'fail') : '' ?>"><?= h($val) ?></td>
+            <td class="<?= $idx === 16 ? ($val === 'PASSED' ? 'pass' : ($val === 'FAILED' ? 'fail' : '')) : '' ?>"><?= h($val) ?></td>
           <?php endforeach; ?>
         </tr>
         <?php endforeach; ?>
@@ -72,13 +74,13 @@ header('Content-Type: text/csv; charset=utf-8');
 header('Content-Disposition: attachment; filename="' . $filenameBase . '.csv"');
 $out = fopen('php://output', 'w');
 fputs($out, "\xEF\xBB\xBF"); // UTF-8 BOM for Excel
-fputcsv($out, ["Class Code", $cls['code']]);
-fputcsv($out, ["Subject", $cls['subject']]);
-fputcsv($out, ["Section", $cls['section']]);
-fputcsv($out, ["School Year", $cls['school_year']]);
-fputcsv($out, ["Semester", $cls['semester']]);
-fputcsv($out, []);
-fputcsv($out, $head);
-foreach ($rows as $r) fputcsv($out, $r);
+write_csv_row($out, ["Class Code", $cls['code']]);
+write_csv_row($out, ["Subject", $cls['subject']]);
+write_csv_row($out, ["Section", $cls['section']]);
+write_csv_row($out, ["School Year", $cls['school_year']]);
+write_csv_row($out, ["Semester", $cls['semester']]);
+write_csv_row($out, []);
+write_csv_row($out, $head);
+foreach ($rows as $r) write_csv_row($out, $r);
 fclose($out);
 exit;
